@@ -110,7 +110,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", default=64, type=int, help="Batch size.")
-    parser.add_argument("--data_train", default="ls_50000cs-train.txt", type=str, help="Training data file.")
+    parser.add_argument("--data_train", default="50000cs-train.txt", type=str, help="Training data file.")
     parser.add_argument("--data_dev", default="cs-dev.txt", type=str, help="Development data file.")
     parser.add_argument("--data_test", default="cs-test.txt", type=str, help="Testing data file.")
     parser.add_argument("--epochs", default=2, type=int, help="Number of epochs.")
