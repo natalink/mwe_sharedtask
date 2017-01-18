@@ -1,0 +1,6 @@
+data_mwe/*
+logs/*
+runs/*
+shared-task-data/*
+__pycache__/*
+cs-train.txt
