@@ -191,7 +191,6 @@ if __name__ == "__main__":
     blind_test_forms = data_test_blind.factors[data_test_blind.FORMS]['strings'] # We use strings instead of words, because words can be <unk>
     blind_test_lemmas = data_test_blind.factors[data_test_blind.LEMMAS]['words']
     blind_test_tags = data_test_blind.factors[data_test_blind.TAGS]['words']
-
     blind_test_mwe = data_test_blind.factors[data_test_blind.MWE]['words']
 
 
