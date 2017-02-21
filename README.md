@@ -62,7 +62,7 @@ If you use the data of the shared task, you can try running the transformation s
 ```
 convert_formats.py
 ```
-It browsers the language directories, takes .parsemetsv and .conllu files for each language and generates two files: one with form+lemma+pos tokens, the other the respective MWE annotation column.
+It browses the language directories, takes .parsemetsv and .conllu files for each language and generates two files: one with form+lemma+pos tokens, the other the respective MWE annotation column.
 ```
 process_folders.sh
 ```
@@ -83,5 +83,5 @@ In order to satisfy the evaluate.py conditions, we substitute MWE tag with order
 The script then evaluates all the outputs for all languages that are located in the language folders and writes a log using a script bin/evaluate.py from the shared task.
 
 
-### DICLAIMER
+#### DICLAIMER
 Most of the scripts were written by the linguist, don't have big expectations. You may as well consider helping her on how to do it in proper pythonic way:)
