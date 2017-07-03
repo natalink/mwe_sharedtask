@@ -13,34 +13,59 @@ import tensorflow.contrib.metrics as tf_metrics
 
 import mwe_dataset
 
-def highway_layer(x, batch_size, activation=tf.nn.relu, carry_bias=-1.0):
-    original_shape = x.get_shape().as_list()
-    w_shape = [original_shape[-1], original_shape[-1]]
-    b_shape = [original_shape[-1]]
+def highway_layer(inputs, activation=tf.nn.relu, scope="HighwayNetwork"):
+    with tf.variable_scope(scope):
+        # pylint: disable=no-member
+        vec_size = inputs.get_shape().as_list()[-1]
 
-    original_shape[0] = batch_size
-    original_shape[1] = -1
-    x = tf.reshape(x, [-1, original_shape[-1]])
+        # pylint: disable=invalid-name
+        W_shape = [vec_size, vec_size]
+        b_shape = [vec_size]
 
-    W_H = tf.Variable(tf.random_normal(w_shape, stddev=0.1), trainable=True, name="weight")
-    b_H = tf.Variable(tf.constant(carry_bias, shape=b_shape), name="bias")
+        W_H = tf.get_variable(
+            "weight_H",
+            shape=W_shape,
+            initializer=tf.random_normal_initializer(stddev=0.1))
+        b_H = tf.get_variable(
+            "bias_H",
+            shape=b_shape,
+            initializer=tf.constant_initializer(-1.0))
 
-    W_T = tf.Variable(tf.random_normal(w_shape, stddev=0.1), trainable=True, name="weight_transform")
-    b_T = tf.Variable(tf.constant(0.1, shape=b_shape), name="bias_transform")
+        W_T = tf.get_variable(
+            "weight_T",
+            shape=W_shape,
+            initializer=tf.random_normal_initializer(stddev=0.1))
+        b_T = tf.get_variable(
+            "bias_T",
+            shape=b_shape,
+            initializer=tf.constant_initializer(-1.0))
 
-    T = tf.sigmoid(tf.matmul(x, W_T) + b_T, name="transform_gate")
-    H = activation(tf.matmul(x, W_H) + b_H, name="activation")
-    C = tf.sub(1.0, T, name="carry_gate")
+        T = tf.sigmoid(
+            tf.add(tf.matmul(inputs, W_T), b_T),
+            name="transform_gate")
+        H = activation(
+            tf.add(tf.matmul(inputs, W_H), b_H),
+            name="activation")
+        C = tf.subtract(1.0, T, name="carry_gate")
 
-    y = tf.add(tf.mul(H, T), tf.mul(x, C), "y")
-    y = tf.reshape(y, tf.stack(original_shape))
-    return y
+        y = tf.add(
+            tf.multiply(H, T),
+            tf.multiply(inputs, C),
+            "y")
+        return y
 
 
 class Network:
     EMB_INITIALIZER=tf.random_normal_initializer(stddev=0.01)
 
-    def __init__(self, rnn_cell, rnn_cell_dim, method, data_train, logdir, expname, threads, restore_path ,seed=42):
+    # Constants, we do not try to tune
+    DEPTH=2
+    NUM_OF_FILTERS=50
+
+    def __init__(self, rnn_cell, rnn_cell_dim,
+                 method, data_train, blank_index,
+                 logdir, expname, threads,
+                 restore_path ,seed=42):
         n_words = len(data_train.factors[data_train.FORMS]['words'])
         n_tags = len(data_train.factors[data_train.TAGS]['words'])
         n_lemmas = len(data_train.factors[data_train.LEMMAS]['words'])
@@ -50,20 +75,21 @@ class Network:
         # Create an empty graph and a session
         graph = tf.Graph()
         graph.seed = seed
-        self.session = tf.Session(graph = graph, config=tf.ConfigProto(inter_op_parallelism_threads=threads,
-                                                                       intra_op_parallelism_threads=threads))
+        self.session = tf.Session(graph = graph,
+                                  config=tf.ConfigProto(inter_op_parallelism_threads=threads,
+                                                        intra_op_parallelism_threads=threads))
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        self.summary_writer = tf.train.SummaryWriter("{}/{}-{}".format(logdir, timestamp, expname), flush_secs=10)
+        self.summary_writer = tf.summary.FileWriter("{}/{}-{}".format(logdir, timestamp, expname), flush_secs=10)
 
 
 
         # Construct the graph
         with self.session.graph.as_default():
             if rnn_cell == "LSTM":
-                rnn_cell = tf.nn.rnn_cell.LSTMCell(rnn_cell_dim)
+                rnn_cell = tf.contrib.rnn.LSTMCell(rnn_cell_dim)
             elif rnn_cell == "GRU":
-                rnn_cell = tf.nn.rnn_cell.GRUCell(rnn_cell_dim)
+                rnn_cell = tf.contrib.rnn.GRUCell(rnn_cell_dim)
             else:
                 raise ValueError("Unknown rnn_cell {}".format(rnn_cell))
 
@@ -72,11 +98,11 @@ class Network:
             self.forms = tf.placeholder(tf.int32, [None, None], name="forms")
             self.tags = tf.placeholder(tf.int32, [None, None], name="tags")
             self.lemmas = tf.placeholder(tf.int32, [None, None], name="lemmas")
-            self.mwe = tf.placeholder(tf.int32, [None, None], name="mwe")
+            self.mwe = tf.placeholder(tf.int64, [None, None], name="mwe")
 
             self.charseqs_ids = tf.placeholder(tf.int32, [None, None], name="charseqs_ids")
             self.charseqs = tf.placeholder(tf.int32, [None, None], name="charseqs")
-            self.charseqs_lens = tf.placeholder(tf.int32, [None, None], name="charseqs_lens")
+            self.charseqs_lens = tf.placeholder(tf.int32, [None], name="charseqs_lens")
 
             self.keep_dropout = tf.placeholder_with_default(1.0, shape=None, name="keep_dropout")
             self.charseqs_size = tf.placeholder(tf.int32)
@@ -101,50 +127,52 @@ class Network:
 
 
             if "char_" in method:
-                self.char_emb_matrix =  tf.get_variable("char_embedding_matrix",
-                                                        [n_tags, rnn_cell_dim],
-                                                        initializer=self.EMB_INITIALIZER,
-                                                        dtype=tf.float32)
-                self.char_embeddings = tf.nn.embedding_lookup(self.char_emb_matrix, self.charseqs)
-                self.char_embeddings = tf.nn.dropout(self.char_embeddings, self.keep_dropout)
+                with tf.variable_scope("char-lvl_emb"):
+                    self.char_emb_matrix =  tf.get_variable("char_embedding_matrix",
+                                                            [n_alphabet, rnn_cell_dim],
+                                                            initializer=self.EMB_INITIALIZER,
+                                                            dtype=tf.float32)
+                    self.char_embeddings = tf.nn.embedding_lookup(self.char_emb_matrix, self.charseqs)
+                    self.char_embeddings = tf.nn.dropout(self.char_embeddings, self.keep_dropout)
 
-                if "rnn_" in method:
-                    ch_rnn_cell = tf.nn.rnn_cell.GRUCell(int(embedding_size / 2))
-                    _, states = tf.nn.bidirectional_dynamic_rnn(cell_fw=ch_rnn_cell,
-                                                                cell_bw=ch_rnn_cell,
-                                                                inputs=self.char_embeddings,
-                                                                sequence_length=self.charseqs_lens,
-                                                                dtype=tf.float32)
-                    self.form_emb_matrix = tf.concat(1, states)
-
-                elif "conv_" in method:
-                    self.char_embeddings = tf.expand_dims(self.char_embeddings, -1)
-                    pooled_layer = []
-                    for i in range(5):
-                        for j in range(num_of_filters):
-                            filt = tf.get_variable("conv_filter_{}_{}".format(i+1, j),
-                                                    initializer=tf.random_uniform([i+2, embedding_size, 1, 1], -1.0, 1.0),
-                                                    trainable=True)
-                            conv_layer = tf.nn.conv2d(self.char_embeddings,
-                                                      filter=filt,
-                                                      strides=[1,1,embedding_size,1],
-                                                      padding="VALID",
-                                                      name="conv_{}_{}".format(i+1, j))
-                            # This should be a better approach for pooling from variable length sequence
-                            maxpool_layer = tf.reduce_max(conv_layer, 1, keep_dims=True)
-                            pooled_layer.append(maxpool_layer)
-                    pooled_concatenated = tf.squeeze(tf.concat(3, pooled_layer), [2])
-                    h_layer = pooled_concatenated
-                    # Add at least one highway layer for good measure
-                    for i in range(1):
-                        h_layer = highway_layer(h_layer, self.charseqs_size)
-                    self.form_emb_matrix = h_layer
+                    if "rnn_" in method:
+                        ch_rnn_cell = tf.contrib.rnn.GRUCell(int(rnn_cell_dim / 2))
+                        _, states = tf.nn.bidirectional_dynamic_rnn(cell_fw=ch_rnn_cell,
+                                                                    cell_bw=ch_rnn_cell,
+                                                                    inputs=self.char_embeddings,
+                                                                    sequence_length=self.charseqs_lens,
+                                                                    dtype=tf.float32)
+                        self.form_emb_matrix = tf.concat(axis=1, values=states)
+    
+                    elif "conv_" in method:
+                        embedding_size = rnn_cell_dim
+                        self.char_embeddings = tf.expand_dims(self.char_embeddings, -1)
+                        pooled_layer = []
+                        for i in range(5):
+                            for j in range(self.NUM_OF_FILTERS):
+                                filt = tf.get_variable("conv_filter_{}_{}".format(i+1, j),
+                                                        initializer=tf.random_uniform([i+2, embedding_size, 1, 1], -1.0, 1.0),
+                                                        trainable=True)
+                                conv_layer = tf.nn.conv2d(self.char_embeddings,
+                                                          filter=filt,
+                                                          strides=[1,1,embedding_size,1],
+                                                          padding="SAME",
+                                                          name="conv_{}_{}".format(i+1, j))
+                                # This should be a better approach for pooling from variable length sequence
+                                maxpool_layer = tf.reduce_max(conv_layer, 1, keep_dims=True)
+                                pooled_layer.append(maxpool_layer)
+                        pooled_concatenated = tf.squeeze(tf.concat(axis=3, values=pooled_layer), [1,2])
+                        h_layer = pooled_concatenated
+                        # Add at least one highway layer for good measure
+                        for i in range(self.DEPTH):
+                            h_layer = highway_layer(h_layer, scope="highway_{}".format(i))
+                        self.form_emb_matrix = h_layer
 
                 self.forms_embed = tf.nn.embedding_lookup(self.form_emb_matrix, self.charseqs_ids)
 
             # Combine the embeddings
-            self.inputs_embed = tf.nn.dropout(tf.concat(2, [self.forms_embed, self.lemmas_embed, self.tags_embed]))
-            # TODO: linearne transformovat?
+            self.inputs_embed = tf.concat(axis=2, values=[self.forms_embed, self.lemmas_embed, self.tags_embed])
+            self.inputs_embed = tf_layers.fully_connected(self.inputs_embed, rnn_cell_dim, activation_fn=None)
 
 
             hidden_states, _ = tf.nn.bidirectional_dynamic_rnn(cell_fw=rnn_cell,
@@ -152,16 +180,22 @@ class Network:
                                                                inputs=self.inputs_embed,
                                                                sequence_length=self.sentence_lens,
                                                                dtype=tf.float32) # concatenate embedding
-            outputs = tf.concat(2, hidden_states)
+            outputs = tf.concat(axis=2, values=hidden_states)
             mask_tensor = tf.sequence_mask(self.sentence_lens)
-            output_layer = tf_layers.fully_connected(output_layer, n_mwe, activation_fn=None)
+
+            if not "_crf" in method:
+                output_layer = tf_layers.fully_connected(outputs, n_mwe, activation_fn=None)
+            else:
+                # TODO: implement CRF output layer (currently same as linear)
+                output_layer = tf_layers.fully_connected(outputs, n_mwe, activation_fn=None)
+
             self.predictions = tf.argmax(output_layer, 2)            
 
             masked_mwe = tf.boolean_mask(self.mwe, mask_tensor)
             masked_output = tf.boolean_mask(output_layer, mask_tensor)
             masked_predictions = tf.boolean_mask(self.predictions, mask_tensor)
 
-            loss = tf_losses.sparse_softmax_cross_entropy(masked_output, masked_mwe, scope="loss")
+            loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=masked_output, labels=masked_mwe))
             self.training = tf.train.AdamOptimizer().minimize(loss, global_step=self.global_step)
             self.accuracy = tf_metrics.accuracy(masked_predictions, masked_mwe) #vysledni scotre bude jiny !!! cely score na tech MWE
 
@@ -173,7 +207,7 @@ class Network:
 
             self.saver = tf.train.Saver(max_to_keep=None)
             # Initialize variables
-            self.session.run(tf.initialize_all_variables())
+            self.session.run(tf.global_variables_initializer())
             if self.summary_writer:
                 self.summary_writer.add_graph(self.session.graph)
 
@@ -247,9 +281,16 @@ if __name__ == "__main__":
     parser.add_argument("--rnn_cell", default="GRU", type=str, help="RNN cell type.")
     parser.add_argument("--rnn_cell_dim", default=100, type=int, help="RNN cell dimension.")
     parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
-    parser.add_argument("--restore", default=None, type=str, help="Restore session with a model")
+    parser.add_argument("--restore", default=None, type=str, help="Restore session with a model.")
+    parser.add_argument("--dropout", default=1.0, type=float, help="Dropout keep probability.")
     args = parser.parse_args()
     lang = args.data_test.split("/")[1]
+
+    # We support following setups (methods):
+    # learned_we
+    # char_rnn_we
+    # char_conv_we
+    # TODO: You can add suffix "_crf" for CRF output layer (e.g. learned_we_crf)
 
     # Load the data
     print("Loading the data.", file=sys.stderr)
@@ -261,10 +302,12 @@ if __name__ == "__main__":
     print("Constructing the network for $lang", file=sys.stderr)
     expname = "{}-tagger-{}{}-m{}-bs{}-epochs{}".format(lang, args.rnn_cell, args.rnn_cell_dim, args.method,
                                                         args.batch_size, args.epochs)
+
     network = Network(rnn_cell=args.rnn_cell,
                       rnn_cell_dim=args.rnn_cell_dim,
                       method=args.method,
                       data_train=data_train,
+                      blank_index=data_train._data[data_train.MWE]['words_map']['_'],
                       logdir=args.logdir,
                       expname=expname,
                       threads=args.threads,
@@ -277,10 +320,9 @@ if __name__ == "__main__":
         test_sentence_lens, test_word_ids, test_charseqs_ids, test_charseqs, test_charseqs_lens = \
             data_test.whole_data_as_batch(including_charseqs=True)
         test_predictions = network.predict(test_sentence_lens,
-                                           test_ids[data_train.FORMS],
-                                           test_ids[data_train.LEMMAS],
-                                           test_ids[data_train.TAGS],
-                                           test_word_ids[data_train.MWE],
+                                           test_word_ids[data_train.FORMS],
+                                           test_word_ids[data_train.LEMMAS],
+                                           test_word_ids[data_train.TAGS],
                                            test_charseqs_ids[data_train.FORMS],
                                            test_charseqs[data_train.FORMS],
                                            test_charseqs_lens[data_train.FORMS])  # ALSO< lemmas and tags
@@ -294,6 +336,7 @@ if __name__ == "__main__":
 
 
                 network.train(sentence_lens,
+                              args.dropout,
                               word_ids[data_train.FORMS],
                               word_ids[data_train.LEMMAS],
                               word_ids[data_train.TAGS],
