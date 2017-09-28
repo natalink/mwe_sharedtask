@@ -83,5 +83,4 @@ In order to satisfy the evaluate.py conditions, we substitute MWE tag with order
 The script then evaluates all the outputs for all languages that are located in the language folders and writes a log using a script bin/evaluate.py from the shared task.
 
 
-#### DICLAIMER
-Most of the scripts were written by the linguist, don't have big expectations. You may as well consider helping her on how to do it in proper pythonic way:)
+# Refactoring experiments: Character-level NN
